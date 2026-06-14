@@ -1,0 +1,128 @@
+# ============================================================
+# algo-sys - Strong .gitignore for Algo Trading System
+# ============================================================
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---------- Virtual Environment (Very Important) ----------
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ---------- Secrets & Credentials (CRITICAL for Trading) ----------
+# Never commit broker API keys, access tokens, client IDs
+.env
+.env.*
+*.env
+.envrc
+secrets/
+credentials/
+config/local*.yaml
+config/local*.yml
+config/local*.json
+*.key
+*.pem
+auth.json
+token.json
+dhan_token.json
+access_token.txt
+
+# ---------- Data Files (Instrument Master, Market Data) ----------
+# These are usually large and change frequently. Better to fetch via API.
+data/
+*.csv
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.pickle
+*.pkl
+*.joblib
+
+# Keep only if you really want to version small reference files
+# !data/.gitkeep
+
+# ---------- Logs & Output ----------
+logs/
+*.log
+logs.txt
+output/
+outputs/
+results/
+figures/
+*.png
+*.jpg
+*.pdf
+
+# ---------- Database ----------
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+db/
+database/
+
+# ---------- IDE / Editor ----------
+.vscode/
+.idea/
+*.swp
+*~
+.project
+.pydevproject
+.settings/
+
+# ---------- OS Generated ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Testing & Coverage ----------
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.pytest_cache/
+.hypothesis/
+htmlcov/
+
+# ---------- Jupyter (if you add notebooks later) ----------
+.ipynb_checkpoints
+
+# ---------- Temporary ----------
+tmp/
+temp/
+.cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---------- Dhan / Broker Specific ----------
+# Add any specific token or session files here if you create them
+dhan_session/
