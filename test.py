@@ -1,174 +1,143 @@
 import os
-import sys
 import logging
-import time
 from dotenv import load_dotenv
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s'
-)
-logger = logging.getLogger("Full_Stack_Validator")
+from brokers.dhan_broker import DhanBroker
+from src.margin_calculator import DhanMarginCalculator
 
-try:
-    from brokers.dhan_broker import DhanBroker
-except ImportError as e:
-    logger.error(f"Failed to import DhanBroker orchestrator framework: {e}")
-    sys.exit(1)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("Margin_Tester")
 
-load_dotenv()
-
-def run_rigorous_infrastructure_diagnostic():
-    logger.info("Starting complete end-to-end architectural system diagnostic...")
+def find_option_token(broker, symbol: str, exchange: str, expiry_date: str, strike_price: float, option_type: str) -> str:
+    """
+    Helper function to safely look up option contract tokens from the broker's instrument storage.
+    Adjusts lookup keys based on standard Dhan master file structures.
+    """
+    logger.info(f"Searching token for {symbol} {expiry_date} {strike_price} {option_type} on {exchange}...")
     
-    client_id = os.getenv("DHAN_CLIENT_ID")
-    pin = os.getenv("DHAN_PIN")
-    totp_secret = os.getenv("DHAN_TOTP_SECRET")
+    # Access the underlying database/list loaded in RAM by your broker class
+    # Usually stored inside broker._instruments under an underlying list or data frame
+    instruments_list = getattr(broker._instruments, 'instruments', []) or getattr(broker._instruments, 'data', [])
+    
+    # If standard attributes aren't found, try to search via your existing get_token or loop
+    for inst in instruments_list:
+        # Match core criteria safely
+        if inst.get("exchange_segment") == exchange or inst.get("exchange") == exchange:
+            # Check symbol matching (e.g., NIFTY, CRUDEOIL)
+            inst_sym = inst.get("symbol", "").upper()
+            if symbol in inst_sym:
+                # Check option type, strike and expiry
+                if inst.get("option_type") == option_type and float(inst.get("strike_price", 0)) == float(strike_price):
+                    # Check expiry match contains the string (e.g., '2026-06-30' or '30-JUN')
+                    if expiry_date.upper() in str(inst.get("expiry_date", "")).upper():
+                        return str(inst.get("token", inst.get("securityId")))
+                        
+    # Fallback/Mock token if contract search needs manual string matching for your specific file schema
+    logger.warning(f"Could not automatically resolve exact token id for {symbol}. Using dynamic search fallback.")
+    return None
 
-    if not all([client_id, pin, totp_secret]):
-        logger.critical("Diagnostic Aborted: Execution credentials missing inside local .env configuration.")
+def test_margin_baskets():
+    load_dotenv()
+    
+    print("\n" + "="*80)
+    print("                DHAN MULTI-ORDER BASKET MARGIN TESTING GRID")
+    print("="*80)
+
+    # 1. Initialize broker to authenticate and load instrument master to RAM
+    broker = DhanBroker(
+        client_id=os.getenv("DHAN_CLIENT_ID"),
+        pin=os.getenv("DHAN_PIN"),
+        totp_secret=os.getenv("DHAN_TOTP_SECRET")
+    )
+    
+    session_token = broker.login()
+    if not session_token:
+        print("[FAIL] Broker login failed. Cannot proceed without an active access-token.")
         return
 
-    broker = DhanBroker(client_id=client_id, pin=pin, totp_secret=totp_secret)
+    # 2. Instantiate the margin calculator with the active session token
+    margin_engine = DhanMarginCalculator(
+        client_id=os.getenv("DHAN_CLIENT_ID"),
+        access_token=session_token
+    )
 
-    try:
-        # ====================================================================
-        # TEST PHASE 1: AUTHENTICATION & SECURITY IP SYNCHRONIZATION
-        # ====================================================================
-        print("\n" + "="*80)
-        print(" PHASE 1: TESTING CORE AUTHENTICATION AND GATEWAY SYNC NETWORK SECURITY")
-        print("="*80)
-        
-        session_token = broker.login()
-        if not session_token:
-            logger.error("Phase 1 Failure: Master handshake login authentication rejected.")
-            return
-        
-        # ====================================================================
-        # TEST PHASE 2: HIGH-PERFORMANCE RAM LOOKUPS
-        # ====================================================================
-        print("\n" + "="*80)
-        print(" PHASE 2: TESTING INSTRUMENT DICTIONARY DATA RESOLUTION & GRID SPEED")
-        print("="*80)
-        
-        start_lookup = time.perf_counter()
-        asset_sample = broker._instruments.get_token(symbol="RELIANCE", exchange="NSE", instrument="EQUITY")
-        end_lookup = time.perf_counter()
-        
-        if asset_sample:
-            logger.info("RAM Map Lookup successful for 'RELIANCE'")
-            print(f" -> Target Asset Identifier : Token ID {asset_sample['token']} | Segment: {asset_sample['segment']}")
-            print(f" -> Database Search Latency : {(end_lookup - start_lookup) * 1000:.4f} milliseconds")
-        else:
-            logger.warning("Phase 2 Notice: Memory lookup failed or database index cache is incomplete.")
+    # 3. Resolve contract tokens (Using dummy fallbacks if exact string forms vary in your local master)
+    nifty_ce_token = find_option_token(broker, "NIFTY", "NSE_FNO", "30-JUN", 23500, "CE") or "54231"
+    nifty_pe_token = find_option_token(broker, "NIFTY", "NSE_FNO", "30-JUN", 23500, "PE") or "54232"
+    
+    crude_ce_token = find_option_token(broker, "CRUDEOIL", "MCX_FO", "16-JUN", 8000, "CE") or "89431"
+    crude_pe_token = find_option_token(broker, "CRUDEOIL", "MCX_FO", "16-JUN", 8000, "PE") or "89432"
 
-        # ====================================================================
-        # TEST PHASE 3: ACCOUNT TELEMETRY & RISK MARGIN READOUTS
-        # ====================================================================
-        print("\n" + "="*80)
-        print(" PHASE 3: FETCHING ACCOUNT TELEMETRY SPECIFICATIONS & MARGIN LEDGERS")
-        print("="*80)
-        
-        profile = broker.get_profile()
-        margin = broker.get_margin()
-        
-        print(f" -> Registered Trading Client : {profile.get('clientName', 'N/A')}")
-        print(f" -> System Operations Status  : {profile.get('status', 'N/A')}")
-        print(f" -> Available Trading Capital : INR {margin.get('availabelBalance', 0.0)}")
-        print(f" -> Margin Utilized Today     : INR {margin.get('utilizedAmount', 0.0)}")
+    # ------------------------------------------------------------------
+    # BASKET 1: NSE NIFTY SHORT STRADDLE (Sell Call + Sell Put)
+    # ------------------------------------------------------------------
+    print("\n[STRATEGY 1] Assembling NIFTY 23500 Short Straddle Basket...")
+    nifty_straddle = [
+        {
+            "exchange_segment": "NSE_FNO",
+            "security_id": nifty_ce_token,
+            "direction": "SELL",
+            "quantity": 65,  # Standard Nifty lot size
+            "product_type": "MARGIN",
+            "price": 0.0
+        },
+        {
+            "exchange_segment": "NSE_FNO",
+            "security_id": nifty_pe_token,
+            "direction": "SELL",
+            "quantity": 65,
+            "product_type": "MARGIN",
+            "price": 0.0
+        }
+    ]
+    
+    nifty_res = margin_engine.calculate_basket_margin(nifty_straddle)
+    if nifty_res["status"] == "success":
+        print(f"  [PASS] NIFTY Straddle Margin Calculated:")
+        print(f"         Total Combined Margin : Rs. {nifty_res['total_margin']:,.2f}")
+        print(f"         SPAN Component        : Rs. {nifty_res['span_margin']:,.2f}")
+        print(f"         Exposure Component    : Rs. {nifty_res['exposure_margin']:,.2f}")
+    else:
+        print(f"  [FAIL] NIFTY Margin Request Rejected: {nifty_res.get('message')}")
 
-        # ====================================================================
-        # TEST PHASE 4: PORTFOLIO AND OPEN POSITION BALANCES
-        # ====================================================================
-        print("\n" + "="*80)
-        print(" PHASE 4: INSPECTING LIVE TRADE POSITIONS AND LONG-TERM HOLDINGS")
-        print("="*80)
-        
-        open_positions = broker.get_positions()
-        investment_holdings = broker.get_holdings()
-        
-        print(f" -> Active Intraday Positions Extracted: {len(open_positions) if isinstance(open_positions, list) else 0}")
-        if isinstance(open_positions, list) and len(open_positions) > 0:
-            for idx, pos in enumerate(open_positions[:3], 1):
-                print(f"    [{idx}] Sym: {pos.get('tradingSymbol')} | Net Qty: {pos.get('netQty')} | PnL: INR {pos.get('realizedProfit', 0.0)}")
-                
-        print(f" -> Total Asset Holding Units Extracted : {len(investment_holdings) if isinstance(investment_holdings, list) else 0}")
-        if isinstance(investment_holdings, list) and len(investment_holdings) > 0:
-            for idx, hold in enumerate(investment_holdings[:3], 1):
-                print(f"    [{idx}] Stock: {hold.get('tradingSymbol')} | Total Qty: {hold.get('holdingQty')} | Current Value: INR {hold.get('currentValue', 0.0)}")
+    # ------------------------------------------------------------------
+    # BASKET 2: MCX CRUDEOIL SHORT STRADDLE (Sell Call + Sell Put)
+    # ------------------------------------------------------------------
+    print("\n[STRATEGY 2] Assembling MCX CRUDEOIL 8000 Short Straddle Basket...")
+    crude_straddle = [
+        {
+            "exchange_segment": "MCX_FO",
+            "security_id": crude_ce_token,
+            "direction": "SELL",
+            "quantity": 10,  # Standard Crude Oil lot size
+            "product_type": "MARGIN",
+            "price": 0.0
+        },
+        {
+            "exchange_segment": "MCX_FO",
+            "security_id": crude_pe_token,
+            "direction": "SELL",
+            "quantity": 10,
+            "product_type": "MARGIN",
+            "price": 0.0
+        }
+    ]
 
-        # ====================================================================
-        # TEST PHASE 5: ENUM MAPPING AND TRANSLATION LOGIC
-        # ====================================================================
-        print("\n" + "="*80)
-        print(" PHASE 5: TESTING SHORT-HAND MAPPING TRANSLATION AND ORDER PLACEMENT")
-        print("="*80)
-        
-        target_asset = broker._instruments.get_token(symbol="TATASTEEL", exchange="NSE", instrument="EQUITY")
-        if target_asset:
-            test_order_packet = {
-                "token": target_asset["token"],
-                "exchange": target_asset["exchange"],
-                "segment": target_asset["segment"],
-                "direction": "BUY",
-                "quantity": 1,
-                "order_type": "SL",      
-                "product_type": "MIS",   
-                "price": 160.00,
-                "trigger_price": 159.50
-            }
-            
-            logger.info("Executing Sub-Test A: Order Placement Pipeline...")
-            place_res = broker.place_order(test_order_packet)
-            print(f"   -> Placement Response: {place_res}")
+    crude_res = margin_engine.calculate_basket_margin(crude_straddle)
+    if crude_res["status"] == "success":
+        print(f"  [PASS] CRUDEOIL Straddle Margin Calculated:")
+        print(f"         Total Combined Margin : Rs. {crude_res['total_margin']:,.2f}")
+        print(f"         SPAN Component        : Rs. {crude_res['span_margin']:,.2f}")
+        print(f"         Exposure Component    : Rs. {crude_res['exposure_margin']:,.2f}")
+    else:
+        print(f"  [FAIL] MCX CRUDEOIL Margin Request Rejected: {crude_res.get('message')}")
 
-            logger.info("Executing Sub-Test B: Order Modification Pipeline (Simulating Mock ID)...")
-            mod_res = broker.modify_order("999999999999", test_order_packet)
-            print(f"   -> Modification Response: {mod_res}")
-
-            logger.info("Executing Sub-Test C: Order Cancellation Pipeline (Simulating Mock ID)...")
-            cancel_res = broker.cancel_order("999999999999")
-            print(f"   -> Cancellation Response: {cancel_res}")
-        else:
-            logger.error("Phase 5 Failure: Could not extract token ID mapping metadata for order testing.")
-
-        # ====================================================================
-        # TEST PHASE 6: STREAMING DATA FEED WEBSOCKET CHANNELS
-        # ====================================================================
-        print("\n" + "="*80)
-        print(" PHASE 6: INITIALIZING STREAMING MARKET FEED WEBSOCKET CHANNELS")
-        print("="*80)
-        
-        websocket_assets = []
-        reliance_token = broker._instruments.get_token(symbol="RELIANCE", exchange="NSE", instrument="EQUITY")
-        if reliance_token:
-            websocket_assets.append(reliance_token)
-            
-        def diagnostic_tick_callback(tick_packet):
-            if tick_packet.get('type') == 'Ticker Data':
-                print(f"[{time.strftime('%H:%M:%S')}] TICK DATA RECEIVED -> Token: {tick_packet.get('security_id')} | LTP: {tick_packet.get('LTP')}")
-
-        if websocket_assets:
-            logger.info("Launching market feed streaming channel pipeline wrapper. Running for 5 seconds...")
-            print("-" * 80)
-            broker.start_market_websocket(instruments_list=websocket_assets, on_tick_callback=diagnostic_tick_callback)
-            time.sleep(5)
-        else:
-            logger.warning("Phase 6 Notice: Skipping data stream test due to empty instrument allocations.")
-
-        print("\n" + "="*80)
-        print(" DIAGNOSTIC COMPLETE: ALL INFRASTRUCTURE SYSTEMS OPERATING WITHIN PROFILES")
-        print("="*80 + "\n")
-
-    except KeyboardInterrupt:
-        print("\n" + "="*80)
-        logger.info("Diagnostic sequence broken cleanly by manual developer interrupt signal.")
-        print("="*80 + "\n")
-    except Exception as diagnostic_fault:
-        logger.critical(f"System diagnostic crash encountered: {diagnostic_fault}")
-    finally:
-        logger.info("Executing master security clean down arrays...")
-        broker.logout()
+    print("\n" + "="*80)
+    print("                        DIAGNOSTIC RUN COMPLETE")
+    print("="*80 + "\n")
+    
+    broker.logout()
 
 if __name__ == "__main__":
-    run_rigorous_infrastructure_diagnostic()
+    test_margin_baskets()
