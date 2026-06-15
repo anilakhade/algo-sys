@@ -1,143 +1,115 @@
 import os
+import sys
 import logging
+import time
 from dotenv import load_dotenv
 
-from brokers.dhan_broker import DhanBroker
-from src.margin_calculator import DhanMarginCalculator
+# 1. Setup localized logging profile
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s'
+)
+logger = logging.getLogger("Hybrid_Feed_Tester")
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("Margin_Tester")
+try:
+    from brokers.dhan.login import DhanAuth
+    from brokers.dhan.instruments import DhanInstruments
+    from brokers.dhan.websocket import DhanWebSocket
+except ImportError as e:
+    logger.error(f"System architecture import fault: {e}")
+    sys.exit(1)
 
-def find_option_token(broker, symbol: str, exchange: str, expiry_date: str, strike_price: float, option_type: str) -> str:
-    """
-    Helper function to safely look up option contract tokens from the broker's instrument storage.
-    Adjusts lookup keys based on standard Dhan master file structures.
-    """
-    logger.info(f"Searching token for {symbol} {expiry_date} {strike_price} {option_type} on {exchange}...")
-    
-    # Access the underlying database/list loaded in RAM by your broker class
-    # Usually stored inside broker._instruments under an underlying list or data frame
-    instruments_list = getattr(broker._instruments, 'instruments', []) or getattr(broker._instruments, 'data', [])
-    
-    # If standard attributes aren't found, try to search via your existing get_token or loop
-    for inst in instruments_list:
-        # Match core criteria safely
-        if inst.get("exchange_segment") == exchange or inst.get("exchange") == exchange:
-            # Check symbol matching (e.g., NIFTY, CRUDEOIL)
-            inst_sym = inst.get("symbol", "").upper()
-            if symbol in inst_sym:
-                # Check option type, strike and expiry
-                if inst.get("option_type") == option_type and float(inst.get("strike_price", 0)) == float(strike_price):
-                    # Check expiry match contains the string (e.g., '2026-06-30' or '30-JUN')
-                    if expiry_date.upper() in str(inst.get("expiry_date", "")).upper():
-                        return str(inst.get("token", inst.get("securityId")))
-                        
-    # Fallback/Mock token if contract search needs manual string matching for your specific file schema
-    logger.warning(f"Could not automatically resolve exact token id for {symbol}. Using dynamic search fallback.")
-    return None
+load_dotenv()
 
-def test_margin_baskets():
-    load_dotenv()
-    
-    print("\n" + "="*80)
-    print("                DHAN MULTI-ORDER BASKET MARGIN TESTING GRID")
-    print("="*80)
+def execute_hybrid_system_test():
+    logger.info("Initializing multi-exchange hybrid lookup test...")
 
-    # 1. Initialize broker to authenticate and load instrument master to RAM
-    broker = DhanBroker(
-        client_id=os.getenv("DHAN_CLIENT_ID"),
-        pin=os.getenv("DHAN_PIN"),
-        totp_secret=os.getenv("DHAN_TOTP_SECRET")
-    )
-    
-    session_token = broker.login()
-    if not session_token:
-        print("[FAIL] Broker login failed. Cannot proceed without an active access-token.")
+    client_id = os.getenv("DHAN_CLIENT_ID")
+    pin = os.getenv("DHAN_PIN")
+    totp_secret = os.getenv("DHAN_TOTP_SECRET")
+
+    if not all([client_id, pin, totp_secret]):
+        logger.error("Configuration Failure: Secure credentials missing from .env context.")
         return
 
-    # 2. Instantiate the margin calculator with the active session token
-    margin_engine = DhanMarginCalculator(
-        client_id=os.getenv("DHAN_CLIENT_ID"),
-        access_token=session_token
-    )
+    # Instantiate our modules
+    auth = DhanAuth(client_id=client_id, pin=pin, totp_secret=totp_secret)
+    instruments = DhanInstruments(auth_provider=auth)
+    ws = DhanWebSocket(auth_provider=auth)
 
-    # 3. Resolve contract tokens (Using dummy fallbacks if exact string forms vary in your local master)
-    nifty_ce_token = find_option_token(broker, "NIFTY", "NSE_FNO", "30-JUN", 23500, "CE") or "54231"
-    nifty_pe_token = find_option_token(broker, "NIFTY", "NSE_FNO", "30-JUN", 23500, "PE") or "54232"
-    
-    crude_ce_token = find_option_token(broker, "CRUDEOIL", "MCX_FO", "16-JUN", 8000, "CE") or "89431"
-    crude_pe_token = find_option_token(broker, "CRUDEOIL", "MCX_FO", "16-JUN", 8000, "PE") or "89432"
+    try:
+        # Step A: Authentication Handshake
+        auth.execute()
+        
+        # Step B: Boot & compile memory maps
+        instruments.download()
 
-    # ------------------------------------------------------------------
-    # BASKET 1: NSE NIFTY SHORT STRADDLE (Sell Call + Sell Put)
-    # ------------------------------------------------------------------
-    print("\n[STRATEGY 1] Assembling NIFTY 23500 Short Straddle Basket...")
-    nifty_straddle = [
-        {
-            "exchange_segment": "NSE_FNO",
-            "security_id": nifty_ce_token,
-            "direction": "SELL",
-            "quantity": 65,  # Standard Nifty lot size
-            "product_type": "MARGIN",
-            "price": 0.0
-        },
-        {
-            "exchange_segment": "NSE_FNO",
-            "security_id": nifty_pe_token,
-            "direction": "SELL",
-            "quantity": 65,
-            "product_type": "MARGIN",
-            "price": 0.0
-        }
-    ]
-    
-    nifty_res = margin_engine.calculate_basket_margin(nifty_straddle)
-    if nifty_res["status"] == "success":
-        print(f"  [PASS] NIFTY Straddle Margin Calculated:")
-        print(f"         Total Combined Margin : Rs. {nifty_res['total_margin']:,.2f}")
-        print(f"         SPAN Component        : Rs. {nifty_res['span_margin']:,.2f}")
-        print(f"         Exposure Component    : Rs. {nifty_res['exposure_margin']:,.2f}")
-    else:
-        print(f"  [FAIL] NIFTY Margin Request Rejected: {nifty_res.get('message')}")
+        # Step C: Execute our specific asset lookups following the new parsing boundaries
+        logger.info("Resolving targeted test assets from compiled memory maps...")
+        active_subscriptions = []
 
-    # ------------------------------------------------------------------
-    # BASKET 2: MCX CRUDEOIL SHORT STRADDLE (Sell Call + Sell Put)
-    # ------------------------------------------------------------------
-    print("\n[STRATEGY 2] Assembling MCX CRUDEOIL 8000 Short Straddle Basket...")
-    crude_straddle = [
-        {
-            "exchange_segment": "MCX_FO",
-            "security_id": crude_ce_token,
-            "direction": "SELL",
-            "quantity": 10,  # Standard Crude Oil lot size
-            "product_type": "MARGIN",
-            "price": 0.0
-        },
-        {
-            "exchange_segment": "MCX_FO",
-            "security_id": crude_pe_token,
-            "direction": "SELL",
-            "quantity": 10,
-            "product_type": "MARGIN",
-            "price": 0.0
-        }
-    ]
+        # 1. Test NSE Equity Cash (Uses standard Ticker Symbol)
+        infy_cash = instruments.get_token(symbol="INFY", exchange="NSE", instrument="EQUITY")
+        if infy_cash: active_subscriptions.append(infy_cash)
 
-    crude_res = margin_engine.calculate_basket_margin(crude_straddle)
-    if crude_res["status"] == "success":
-        print(f"  [PASS] CRUDEOIL Straddle Margin Calculated:")
-        print(f"         Total Combined Margin : Rs. {crude_res['total_margin']:,.2f}")
-        print(f"         SPAN Component        : Rs. {crude_res['span_margin']:,.2f}")
-        print(f"         Exposure Component    : Rs. {crude_res['exposure_margin']:,.2f}")
-    else:
-        print(f"  [FAIL] MCX CRUDEOIL Margin Request Rejected: {crude_res.get('message')}")
+        # 2. Test BSE Equity Cash (Uses standard Ticker Symbol cross-verify)
+        tcs_bse = instruments.get_token(symbol="TCS", exchange="BSE", instrument="EQUITY")
+        if tcs_bse: active_subscriptions.append(tcs_bse)
 
-    print("\n" + "="*80)
-    print("                        DIAGNOSTIC RUN COMPLETE")
-    print("="*80 + "\n")
-    
-    broker.logout()
+        # 3. Test Spot Index (Uses standard Ticker Symbol)
+        nifty_spot = instruments.get_token(symbol="NIFTY", exchange="NSE", instrument="INDEX")
+        if nifty_spot: active_subscriptions.append(nifty_spot)
+
+        # 4. Test Index Future (Requires just the Expiry Month name)
+        nifty_fut = instruments.get_token(symbol="NIFTY", exchange="NSE", instrument="FUTIDX", expiry="JUN")
+        if nifty_fut: active_subscriptions.append(nifty_fut)
+
+        # 5. Test Index Option (Requires DAY MONTH format, clean numeric strike, and CE/PE)
+        # Note: We try a generic strike cluster to safely catch current month contracts
+        nifty_opt = instruments.get_token(symbol="NIFTY", exchange="NSE", instrument="OPTIDX", expiry="25 JUN", strike=23000, option_type="CE")
+        if nifty_opt: 
+            active_subscriptions.append(nifty_opt)
+        else:
+            # Fallback check for another common expiry day if 25 JUN isn't present in the current master file
+            logger.info("Checking alternate option contract expiry match...")
+            nifty_opt_alt = instruments.get_token(symbol="NIFTY", exchange="NSE", instrument="OPTIDX", expiry="18 JUN", strike=23500, option_type="PE")
+            if nifty_opt_alt: active_subscriptions.append(nifty_opt_alt)
+
+        # 6. Test MCX Commodity Future (Requires Expiry Month name)
+        crude_fut = instruments.get_token(symbol="CRUDEOIL", exchange="MCX", instrument="FUTCOM", expiry="JUN")
+        if crude_fut: active_subscriptions.append(crude_fut)
+
+        print("\n" + "=" * 70)
+        print("                HYBRID MASTER EXTRACTION RESULTS")
+        print("=" * 70)
+        logger.info(f"Successfully resolved {len(active_subscriptions)} targeted assets for streaming:")
+        for asset in active_subscriptions:
+            print(f" -> Ticker: {asset['trading_symbol']:<25} | Token: {asset['token']:<8} | Exch: {asset['exchange']:<4} | Seg: {asset['segment']}")
+        print("=" * 70 + "\n")
+
+        if not active_subscriptions:
+            logger.error("Test Terminated: Zero assets successfully resolved from the database matrix.")
+            return
+
+        # Step D: Define structural feed callback handler
+        def data_stream_monitor(tick_frame):
+            print(f"[{time.strftime('%H:%M:%S')}] TICK INCOMING -> Seg ID: {tick_frame.get('exchange_segment')} | Token: {tick_frame.get('security_id')} | Price: {tick_frame.get('LTP')}")
+
+        # Step E: Ignite WebSocket engine layer stream loop
+        logger.info("Injecting resolved tokens into websocket live pipe. Press Ctrl+C to stop.")
+        print("-" * 70)
+        
+        ws.start_market(instruments_list=active_subscriptions, on_tick_callback=data_stream_monitor)
+
+    except KeyboardInterrupt:
+        print("\n" + "=" * 70)
+        logger.info("Keyboard Interrupt caught. Exiting test safely...")
+        print("=" * 70)
+    except Exception as run_error:
+        logger.critical(f"Standalone pipeline test crashed: {run_error}")
+    finally:
+        logger.info("Purging authentication context footprint...")
+        auth.logout()
 
 if __name__ == "__main__":
-    test_margin_baskets()
+    execute_hybrid_system_test()
